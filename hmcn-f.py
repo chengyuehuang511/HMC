@@ -4,57 +4,60 @@ import numpy as np
 
 
 class Dense(nn.Module):
-    def __init__(self, label_size, activation):
+    def __init__(self, input_dim, output_dim, activation):
         super().__init__()
-        self.label_size = label_size
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        
+        self.linear = nn.Linear(self.input_dim, self.output_dim)
         self.activation = activation
-        self.linear = None
 
     def forward(self, x):
-        if not isinstance(self.linear, nn.Module):
-            self.linear = nn.Linear(x.shape[-1], self.label_size)
+        assert x.shape[-1] == self.input_dim
         x = self.linear(x)
         x = self.activation(x)
         return x
 
 
-def local_model(num_labels, dropout_rate, relu_size):
-    model = nn.Sequential(
-        Dense(relu_size, activation=nn.ReLU()),
-        nn.Dropout(dropout_rate),
-        Dense(num_labels, activation=nn.Sigmoid())
-    )
-    return model
-
-
-def global_model(dropout_rate, relu_size):
-    model = nn.Sequential(
-        Dense(relu_size, activation=nn.ReLU()),
-        nn.Dropout(dropout_rate)
-    )
-    return model
-
-
-def sigmoid_model(label_size):
-    model = nn.Sequential(Dense(label_size, activation=nn.Sigmoid()))
-    return model
-
-
 class HMCNFModel(nn.Module):
-    def __init__(self, features_size, label_size, hierarchy, beta=0.5, dropout_rate=0.1, relu_size=384):
+    def __init__(self, features_size, label_size, hierarchy, hidden_size=384, beta=0.5, dropout_rate=0.1):
+        """
+        feature_size == x.shape[1]
+        label_size == sum(hierarchy)
+        """
         super().__init__()
         self.features_size = features_size
         self.label_size = label_size
         self.hierarchy = hierarchy
+        self.hidden_size = hidden_size
         self.beta = beta
         self.dropout_rate = dropout_rate
-        self.relu_size = relu_size
 
-        self.sigmoid_model = sigmoid_model(label_size)
-        self.global_models = nn.ModuleList([global_model(self.dropout_rate, self.relu_size) for i in range(len(hierarchy))])
-        self.local_models = nn.ModuleList([local_model(hierarchy[i], self.dropout_rate, self.relu_size) for i in range(len(hierarchy))])
+        def local_model(input_dim, hidden_dim, num_labels, dropout_rate):
+            return nn.Sequential(
+                Dense(input_dim, hidden_dim, activation=nn.ReLU()),
+                nn.Dropout(dropout_rate),
+                Dense(hidden_dim, num_labels, activation=nn.Sigmoid())
+            )
+
+        def global_model(input_dim, output_dim, dropout_rate):
+            return nn.Sequential(
+                Dense(input_dim, output_dim, activation=nn.ReLU()),
+                nn.Dropout(dropout_rate)
+            )
+        
+        self.global_models = nn.ModuleList()
+        for i in range(len(hierarchy)):
+            if i == 0:
+                self.global_models.append(global_model(features_size, hidden_size, dropout_rate))
+            else:
+                self.global_models.append(global_model(features_size + hidden_size, hidden_size, dropout_rate))
+        
+        self.local_models = nn.ModuleList([local_model(hidden_size, hidden_size, hierarchy[i], dropout_rate) for i in range(len(hierarchy))])
+        self.sigmoid_model = Dense(hidden_size, label_size, activation=nn.Sigmoid())
 
     def forward(self, x):
+        assert x.shape[-1] == self.features_size
         global_models = []
         local_models = []
 
@@ -88,9 +91,9 @@ if __name__=='__main__':
     model = HMCNFModel(features_size=feature_size, 
                        label_size=label_size, 
                        hierarchy=hierarchy, 
+                       hidden_size=384, 
                        beta=0.5, 
-                       dropout_rate=0.1, 
-                       relu_size=384)
+                       dropout_rate=0.1)
     y_pred = model(x)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     criterion = nn.MSELoss()
