@@ -25,14 +25,14 @@ class Dense(nn.Module):
 
 
 class HMCNFModel(nn.Module):
-    def __init__(self, features_size, label_size, hierarchy, hidden_size=384, beta=0.5, dropout_rate=0.1, if_global=True):
+    def __init__(self, features_size, hierarchy, hidden_size=384, beta=0.5, dropout_rate=0.1, if_global=True, h_specific=None):
         """
         feature_size == x.shape[1]
         label_size == sum(hierarchy)
         """
         super().__init__()
         self.features_size = features_size
-        self.label_size = label_size
+        self.label_size = sum(hierarchy)
         self.hierarchy = hierarchy
         self.hidden_size = hidden_size
         self.beta = beta
@@ -62,7 +62,7 @@ class HMCNFModel(nn.Module):
         self.local_models = nn.ModuleList([local_model(hidden_size, hidden_size, hierarchy[i], dropout_rate) for i in range(len(hierarchy))])
         
         if if_global:
-            self.linear_after_global = nn.Linear(hidden_size, label_size)
+            self.linear_after_global = nn.Linear(hidden_size, self.label_size)
             self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x):
@@ -81,10 +81,12 @@ class HMCNFModel(nn.Module):
 
         p_loc = torch.cat(local_models, dim=1)
 
+        # if use global module
         if self.if_global:
             p_glob = self.linear_after_global(global_models[-1])
             cum = 0
             for i in range(len(hierarchy)):
+                # softmax within hierarchy
                 p_glob[:, cum: cum + hierarchy[i]] = self.softmax(p_glob[:, cum: cum + hierarchy[i]])
                 cum += hierarchy[i]
             labels = (1-self.beta) * p_glob + self.beta * p_loc
@@ -107,20 +109,24 @@ if __name__=='__main__':
     sample_size = 1628
     feature_size = 77
     hierarchy = [18, 80, 178, 142, 77, 4]
-    label_size = sum(hierarchy)
+
+    """
+    hierarchy = [5, 7, 4]
+    level_1_2 = [[0], [2, 3, 4], [5], [6], [1]]
+    """
 
     x = torch.rand(sample_size, feature_size)
 
     y = []
     for i in range(len(hierarchy)):
-        targets = torch.randint(0, hierarchy[i], (sample_size, 1))
+        # -1: doesn't belong to any class within the hierarchy
+        targets = torch.randint(-1, hierarchy[i], (sample_size, 1))
         # targets_to_one_hot = F.one_hot(targets, num_classes=hierarchy[i])
         y.append(targets)
     y = torch.cat(y, dim=1)
 
     beta = 0.5
     model = HMCNFModel(features_size=feature_size, 
-                       label_size=label_size, 
                        hierarchy=hierarchy, 
                        hidden_size=384, 
                        beta=0.5, 
@@ -129,25 +135,28 @@ if __name__=='__main__':
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     criterion = nn.NLLLoss()
     
-    for t in range(50):
+    for t in range(2):
         y_pred = model(x)
         loss = []
         cum = 0
         for i, h_len in enumerate(hierarchy):
-            loss.append(criterion(torch.log(y_pred[:, cum: cum + h_len]), y[:, i].long()))
+            # delete y==-1
+            loss.append(criterion(torch.log(y_pred[y[:, i]!=-1, cum: cum + h_len]), y[y[:, i]!=-1, i].long()))
             cum += h_len
         loss = torch.stack(loss).mean()
         
         y_hat = []
         cum = 0
         for i in range(len(hierarchy)):
+            # has the abbility to predict
             y_hat.append(torch.argmax(y_pred[:, cum: cum + hierarchy[i]], dim=1).reshape(sample_size, 1))
             cum += hierarchy[i]
         y_hat = torch.cat(y_hat, dim=1)
         
         acc = []
         for i in range(len(hierarchy)):
-            acc.append(accuracy_score(y[:, i].numpy(), y_hat[:, i].numpy()))
+            # delete y==-1
+            acc.append(accuracy_score(y[y[:, i]!=-1, i].numpy(), y_hat[y[:, i]!=-1, i].numpy()))
         acc_mean = np.mean(acc)
         
         print("Epoch {} | Loss: {} | Mean Acc: {}".format(t, loss.item(), acc_mean))
