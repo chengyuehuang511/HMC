@@ -46,7 +46,6 @@ class HMC(nn.Module):
         self.fc_L1_2 = nn.Linear(self.mlp_hidden_size, self.L1_labels_num)
         self.fc_L2_1 = nn.Linear(self.feature_size, self.mlp_hidden_size)
         self.fc_L2_2 = nn.Linear(self.mlp_hidden_size * 2, self.L2_labels_num)
-        
 
     def check_L12_table(self, L12_table):
         """check the Legality of L12_table"""
@@ -88,7 +87,7 @@ class HMC(nn.Module):
         L2 += mask
         L2 = F.softmax(L2, dim=1)
 
-        return L1,L2
+        return L1, L2
 
 
 def hmc_loss(L1, L2, L1_gt, L2_gt, Lambda=None, Beta=None):
