@@ -210,7 +210,7 @@ if __name__=='__main__':
     criterion = nn.NLLLoss()
 
     for t in range(200):
-        # if t == 1:
+        # if t == 3:
         #     print(t)
         y_pred = model(x)
         loss = []
@@ -218,7 +218,8 @@ if __name__=='__main__':
         for i, h_len in enumerate(hierarchy):
             # delete y==-1 and y_pred <0
             preserve_idx = (y[:, i] != -1) & (y_pred[:, cum: cum + h_len].sum(dim=1) > 0)
-            loss.append(criterion(torch.log(y_pred[preserve_idx, cum: cum + h_len]), y[preserve_idx, i].long()))
+            if sum(preserve_idx) > 0:
+                loss.append(criterion(torch.log(y_pred[preserve_idx, cum: cum + h_len]), y[preserve_idx, i].long()))
             cum += h_len
         loss = torch.stack(loss).mean()
 
@@ -236,7 +237,8 @@ if __name__=='__main__':
         for i in range(len(hierarchy)):
             # delete y==-1 and y_hat==-1
             preserve_idx = (y[:, i] != -1) & (y_hat[:, i] != -1)
-            acc.append(accuracy_score(y[preserve_idx, i].numpy(), y_hat[preserve_idx, i].numpy()))
+            if sum(preserve_idx) > 0:
+                acc.append(accuracy_score(y[preserve_idx, i].numpy(), y_hat[preserve_idx, i].numpy()))
         acc_mean = np.mean(acc)
 
         print("Epoch {} | Loss: {} | Mean Acc: {}".format(t, loss.item(), acc_mean))
