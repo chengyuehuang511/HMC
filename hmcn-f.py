@@ -89,24 +89,51 @@ class HMCNFModel(nn.Module):
         then log(->0) will be really small --> CELoss will be very big --> gradient explosion
         """
         assert self.check_L12_table(L12_table, L1_labels_num, L2_labels_num)
-        mask = torch.ones_like(L2) * mask_value
         L1_label = L1.argmax(dim=1)
+        mask = torch.ones_like(L2) * mask_value
+        
+        """old version
+        tmp = L2.clone()  #
         # Only keep L2_label that have root L1_label
         for i, element in enumerate(L1_label):
             idx = element.item()
             # if parent = -1, then child = -1
             if sum(L1[i]) < 0:
-                mask[i, :] = -1
                 L2[i, :] += mask[i, :]
             else:
                 # if has no child, then child = -1
                 if len(L12_table[idx]) == 0:
-                    mask[i, :] = -1
                     L2[i, :] += mask[i, :]
                 else:
                     mask[i, L12_table[idx]] = 0
                     L2[i, :] += mask[i, :]
                     L2[i, :] = self.softmax(L2[i, :])
+        result_1 = L2  #
+        L2 = tmp  #
+        """
+        
+        # Only keep L2_label that have root L1_label
+        for i, element in enumerate(L1_label):
+            idx = element.item()
+            # if parent != -1 and has child
+            if sum(L1[i]) > 0 and len(L12_table[idx]) > 0:
+                mask[i, L12_table[idx]] = 0
+                L2[i, :] += mask[i, :]
+                L2[i, :] = self.softmax(L2[i, :])
+            else:
+                L2[i, :] += mask[i, :]
+
+        """ simplified version
+        no_parent_idx = (L1.sum(dim=1) < 0)  # if parent = -1, then child = -1
+        L2_label = [L12_table[idx] for idx in L1_label[~no_parent_idx]]
+        L2 += mask_value
+        L2_has_parent = L2[~no_parent_idx, :]
+        for i, l2 in enumerate(L2_label):
+            if len(l2) > 0:  # has child
+                # L2[~no_parent_idx, :] can not change ???
+                L2_has_parent[i, l2] -= mask_value
+                L2_has_parent[i, :] = self.softmax(L2_has_parent[i, :])
+        """
         return L2
 
     def forward(self, x):
