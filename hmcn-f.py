@@ -26,8 +26,8 @@ class Dense(nn.Module):
 
 
 class HMCNFModel(nn.Module):
-    def __init__(self, features_size, hierarchy, hidden_size=384, beta=0.5, dropout_rate=0.1,
-                 if_global=True, h_specific=None):
+    def __init__(self, features_size, hierarchy, h_specific, hidden_size=384, beta=0.5, dropout_rate=0.1,
+                 if_global=True, if_mask=False):
         """
         feature_size == x.shape[1]
         label_size == sum(hierarchy)
@@ -41,11 +41,12 @@ class HMCNFModel(nn.Module):
         self.dropout_rate = dropout_rate
         self.if_global = if_global
         self.h_specific = h_specific
+        self.if_mask = if_mask
         self.softmax = nn.Softmax(dim=-1)
 
-        # if self.h_specific:
-        #     for i, h in enumerate(h_specific):
-        #         assert self.check_L12_table(h, hierarchy[i], hierarchy[i+1])
+        assert len(self.h_specific) == len(self.hierarchy) - 1
+        for i, h in enumerate(h_specific):
+            assert self.check_L12_table(h, hierarchy[i], hierarchy[i+1])
 
         def local_model(input_dim, hidden_dim, num_labels, dropout_rate):
             return nn.Sequential(
@@ -88,7 +89,7 @@ class HMCNFModel(nn.Module):
         mask_value must not be too small (e.g. -100), b/c after softmax it will be close to zero,
         then log(->0) will be really small --> CELoss will be very big --> gradient explosion
         """
-        assert self.check_L12_table(L12_table, L1_labels_num, L2_labels_num)
+        # assert self.check_L12_table(L12_table, L1_labels_num, L2_labels_num)
         L1_label = L1.argmax(dim=1)
         mask = torch.ones_like(L2) * mask_value
         
@@ -163,8 +164,7 @@ class HMCNFModel(nn.Module):
                 cum += self.hierarchy[i]
             labels = (1-self.beta) * p_glob + self.beta * p_loc
 
-        if self.h_specific:
-            assert len(self.h_specific) == len(self.hierarchy) - 1
+        if self.if_mask:
             cum = 0
             for i, h in enumerate(self.h_specific):
                 # assert self.check_L12_table(h, self.hierarchy[i], self.hierarchy[i+1])
@@ -172,10 +172,44 @@ class HMCNFModel(nn.Module):
                 cum += self.hierarchy[i]
                 L2 = labels[:, cum: cum + self.hierarchy[i+1]]
                 labels[:, cum: cum + self.hierarchy[i+1]] = self.masking(L1, L2, h, self.hierarchy[i], self.hierarchy[i+1])
+        self.result = labels
         return labels
 
+    def hier_violation_loss(self, double_softmax=True):
+        loss = []
+        criterion = nn.MSELoss()
+        cum = 0
+        for i, h in enumerate(self.h_specific):
+            L1 = self.result[:, cum: cum + self.hierarchy[i]]
+            L1_label = L1.argmax(dim=1)  # real or fake ?
+            L2_label = [h[idx] for idx in L1_label]
+            L2_label_len = [len(i) for i in L2_label]
+            cum += self.hierarchy[i]
+            L2 = self.result[:, cum: cum + self.hierarchy[i + 1]]
+            L2_sum = []
+            L1_new = []
+            for j, hh in enumerate(h):
+                if len(hh) != 0:
+                    L1_new.append(L1[:, j])
+                    L2_sum.append(L2[:, hh].sum(dim=1))  # .unsqueeze(dim=1)
+                else:
+                    if not double_softmax:
+                        L1_new.append(L1[:, j])
+                        L2_sum.append(torch.zeros_like(L1[:, j]))
+            L1_new = torch.stack(L1_new, dim=1)
+            L2_sum = torch.stack(L2_sum, dim=1)
 
-if __name__=='__main__':
+            if double_softmax:
+                if L1_new.shape[1] != L1.shape[1]:
+                    L1_new = self.softmax(L1_new)
+            else:
+                L1_new = L1_new[torch.tensor(L2_label_len) != 0, :]
+                L2_sum = L2_sum[torch.tensor(L2_label_len) != 0, :]
+            loss.append(criterion(L1_new, L2_sum))
+        return torch.stack(loss).mean()
+
+
+if __name__ == '__main__':
 
     # x = torch.cat([torch.zeros([1000,77]), torch.ones([628,77])], dim=0)
     # y = torch.cat([torch.zeros([1000,499]), torch.ones([628,499])], dim=0)
@@ -191,11 +225,11 @@ if __name__=='__main__':
     feature_size = 77
     # hierarchy = [18, 80, 178, 142, 77, 4]
 
-    # hierarchy = [5, 7]
-    # h_specific = [[[0], [2, 3, 4], [5], [6], [1]]]
+    hierarchy = [5, 7]
+    h_specific = [[[], [2, 3, 4], [5], [6], [0, 1]]]
 
-    hierarchy = [2, 2]
-    h_specific = [[[], [0, 1]]]
+    # hierarchy = [2, 2]
+    # h_specific = [[[], [0, 1]]]
 
     # hierarchy = [2, 2]
     # h_specific = [[[0], [1]]]
@@ -232,8 +266,9 @@ if __name__=='__main__':
                        h_specific=h_specific,
                        hidden_size=384,
                        beta=beta,
-                       dropout_rate=0.1)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3) # , weight_decay=1e-5
+                       dropout_rate=0.1,
+                       if_mask=False)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)  # , weight_decay=1e-5
     criterion = nn.NLLLoss()
 
     for t in range(200):
@@ -241,6 +276,7 @@ if __name__=='__main__':
         #     print(t)
         y_pred = model(x)
         loss = []
+        """calculate the loss in each hierarchy"""
         cum = 0
         for i, h_len in enumerate(hierarchy):
             # delete y==-1 and y_pred <0
@@ -249,6 +285,9 @@ if __name__=='__main__':
                 loss.append(criterion(torch.log(y_pred[preserve_idx, cum: cum + h_len]), y[preserve_idx, i].long()))
             cum += h_len
         loss = torch.stack(loss).mean()
+        """hierarchical violation loss"""
+        hier_violation_weight = 10
+        loss += model.hier_violation_loss(double_softmax=True) * hier_violation_weight
 
         y_hat = []
         cum = 0
